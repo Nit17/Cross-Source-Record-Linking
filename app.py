@@ -37,6 +37,8 @@ if theme_choice == "Dark":
         st.markdown(
                 """
                 <style>
+          html, body, [data-testid="stAppViewContainer"] { background: #0b1324 !important; color: #e2e8f0 !important; }
+          [data-testid="stSidebar"] { background: #0a0f1e !important; }
                     .app-subtitle { color:#cbd5e1; }
                     .card { background:#0f172a; border-color:#334155; }
                     .section-title { color:#e2e8f0; }
