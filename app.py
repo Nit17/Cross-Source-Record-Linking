@@ -13,7 +13,26 @@ except Exception:
     HAVE_AGGRID = False
 
 st.set_page_config(page_title="Cross-Source Record Linking", layout="wide")
-st.title("Cross-Source Record Linking App")
+
+# Lightweight styling
+st.markdown(
+        """
+        <style>
+            .app-subtitle { color:#4b5563; font-size:0.95rem; margin-top:-0.6rem; }
+            .card { background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; padding:1rem; }
+            .section-title { font-weight:600; font-size:1.05rem; margin-bottom:0.4rem; }
+            .muted { color:#6b7280; }
+            .spacer { height:0.5rem; }
+            .tight-metric > div { padding-top:0.2rem; padding-bottom:0.2rem; }
+            .small-note { font-size:0.85rem; color:#6b7280; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+)
+
+st.title("Cross-Source Record Linking")
+st.markdown("<div class='app-subtitle'>Match and reconcile invoices across two CSV sources with exact, composite, and fuzzy rules.</div>", unsafe_allow_html=True)
+st.divider()
 
 st.sidebar.header("Control Panel")
 st.sidebar.subheader("Upload Source Files")
@@ -22,18 +41,23 @@ source_b_file = st.sidebar.file_uploader("Upload Source B CSV", type=["csv"], ke
 
 if source_a_file is not None:
     df_a = pd.read_csv(source_a_file)
-    st.write("Source A Columns:", list(df_a.columns))
+    with st.expander("Source A preview", expanded=False):
+        st.caption("First 10 rows")
+        st.dataframe(df_a.head(10), use_container_width=True)
 else:
     df_a = None
 
 if source_b_file is not None:
     df_b = pd.read_csv(source_b_file)
-    st.write("Source B Columns:", list(df_b.columns))
+    with st.expander("Source B preview", expanded=False):
+        st.caption("First 10 rows")
+        st.dataframe(df_b.head(10), use_container_width=True)
 else:
     df_b = None
 
 if df_a is not None and df_b is not None:
     st.subheader("Column Mapping")
+    st.markdown("<div class='small-note'>Map your CSV columns to semantic fields. You can try Autodetect to pre-fill suggestions.</div>", unsafe_allow_html=True)
     col_left, col_right = st.columns(2)
 
     if st.session_state.get("apply_autodetect", False):
@@ -43,22 +67,23 @@ if df_a is not None and df_b is not None:
         st.session_state["apply_autodetect"] = False
 
     with col_left:
-        st.markdown("Source A mappings")
-        a_invoice_id = st.selectbox("A: Invoice ID", options=[None] + list(df_a.columns), key="a_invoice_id")
-        a_email = st.selectbox("A: Customer Email", options=[None] + list(df_a.columns), key="a_email")
-        a_date = st.selectbox("A: Invoice Date", options=[None] + list(df_a.columns), key="a_date")
-        a_amount = st.selectbox("A: Total Amount", options=[None] + list(df_a.columns), key="a_amount")
-        a_po = st.selectbox("A: PO Number (optional)", options=[None] + list(df_a.columns), key="a_po")
+        st.markdown("<div class='section-title'>Source A mappings</div>", unsafe_allow_html=True)
+        a_invoice_id = st.selectbox("A: Invoice ID", options=[None] + list(df_a.columns), key="a_invoice_id", help="Unique invoice identifier")
+        a_email = st.selectbox("A: Customer Email", options=[None] + list(df_a.columns), key="a_email", help="Customer contact email")
+        a_date = st.selectbox("A: Invoice Date", options=[None] + list(df_a.columns), key="a_date", help="Invoice issue date")
+        a_amount = st.selectbox("A: Total Amount", options=[None] + list(df_a.columns), key="a_amount", help="Invoice total amount")
+        a_po = st.selectbox("A: PO Number (optional)", options=[None] + list(df_a.columns), key="a_po", help="Purchase order number if available")
 
     with col_right:
-        st.markdown("Source B mappings")
-        b_ref = st.selectbox("B: Reference Code", options=[None] + list(df_b.columns), key="b_ref")
-        b_email = st.selectbox("B: Customer Email", options=[None] + list(df_b.columns), key="b_email")
-        b_date = st.selectbox("B: Document Date", options=[None] + list(df_b.columns), key="b_date")
-        b_amount = st.selectbox("B: Grand Total", options=[None] + list(df_b.columns), key="b_amount")
-        b_po = st.selectbox("B: Purchase Order (optional)", options=[None] + list(df_b.columns), key="b_po")
+        st.markdown("<div class='section-title'>Source B mappings</div>", unsafe_allow_html=True)
+        b_ref = st.selectbox("B: Reference Code", options=[None] + list(df_b.columns), key="b_ref", help="External or ERP reference code")
+        b_email = st.selectbox("B: Customer Email", options=[None] + list(df_b.columns), key="b_email", help="Customer contact email")
+        b_date = st.selectbox("B: Document Date", options=[None] + list(df_b.columns), key="b_date", help="Document date (equiv. to invoice date)")
+        b_amount = st.selectbox("B: Grand Total", options=[None] + list(df_b.columns), key="b_amount", help="Document total amount")
+        b_po = st.selectbox("B: Purchase Order (optional)", options=[None] + list(df_b.columns), key="b_po", help="Purchase order number if available")
 
-    if st.button("Autodetect Mappings"):
+    cols_tools = st.columns([1,1,6])
+    if cols_tools[0].button("Autodetect Mappings"):
         det_a = autodetect_a(df_a)
         det_b = autodetect_b(df_b)
         values = {}
@@ -80,6 +105,16 @@ if df_a is not None and df_b is not None:
             })
         st.session_state["autodetect_values"] = values
         st.session_state["apply_autodetect"] = True
+        st.rerun()
+
+    if cols_tools[1].button("Reset Mapping"):
+        for k in [
+            "a_invoice_id","a_email","a_date","a_amount","a_po",
+            "b_ref","b_email","b_date","b_amount","b_po"
+        ]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.experimental_set_query_params()  # clears widget state in URL
         st.rerun()
 
     mapping_a = MappingA(invoice_id=a_invoice_id, customer_email=a_email, invoice_date=a_date, total_amount=a_amount, po_number=a_po) if all(v is not None for v in [a_invoice_id, a_email, a_date, a_amount]) else None
@@ -174,7 +209,7 @@ if df_a is not None and df_b is not None:
                 if HAVE_AGGRID:
                     gob = GridOptionsBuilder.from_dataframe(matched_df)
                     gob.configure_default_column(filter=True, sortable=True, resizable=True)
-                    AgGrid(matched_df, gridOptions=gob.build(), height=300)
+                    AgGrid(matched_df, gridOptions=gob.build(), height=320, theme="streamlit")
 
         with tab2:
             st.subheader("Suspect Records")
@@ -194,17 +229,22 @@ if df_a is not None and df_b is not None:
 
         with tab3:
             st.subheader("Unmatched Records")
-            st.write("Unmatched Source A Records:", unmatched_a)
-            st.write("Unmatched Source B Records:", unmatched_b)
+            col_ua, col_ub = st.columns(2)
+            with col_ua:
+                st.markdown("**Source A**")
+                st.dataframe(pd.DataFrame(unmatched_a).head(50), use_container_width=True)
+            with col_ub:
+                st.markdown("**Source B**")
+                st.dataframe(pd.DataFrame(unmatched_b).head(50), use_container_width=True)
 
         with tab4:
             st.subheader("Needs Attention")
             if st.session_state.get("needs_attention"):
                 df_na = pd.DataFrame([{**x.a_row, **{f"B_{k}": v for k, v in x.b_row.items()}, "tier": x.tier} for x in st.session_state["needs_attention"] if hasattr(x, 'a_row')])
                 if HAVE_AGGRID:
-                    AgGrid(df_na, height=250)
+                    AgGrid(df_na, height=260, theme="streamlit")
                 else:
-                    st.dataframe(df_na, height=250)
+                    st.dataframe(df_na, height=260, use_container_width=True)
 
         with st.expander("Run Logs"):
             cols = st.columns([1,1,6])
