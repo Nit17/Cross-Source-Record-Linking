@@ -113,8 +113,8 @@ def run_pipeline(
             return
         cand["amount_diff_pct"] = (cand["amount_a"] - cand["amount_b"]).abs() / cand["amount_a"].replace(0, pd.NA)
         cand["date_diff_days"] = (cand["date_a"] - cand["date_b"]).abs().dt.days
-        # optional domain sim
-        cand["domain_sim"] = cand.apply(lambda r: email_domain_similarity(r["clean_email_a"], r["clean_email_b"]), axis=1)
+        # emails are equal in this join, so domain similarity is perfect
+        cand["domain_sim"] = 1.0
         cand["name_sim"] = 0.0  # placeholder if name columns are unknown here
 
         elig = cand[(cand["amount_diff_pct"] <= rules.amount_tolerance) & (cand["date_diff_days"] <= rules.date_tolerance)]
