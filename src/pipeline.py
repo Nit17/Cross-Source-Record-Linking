@@ -188,4 +188,36 @@ def run_pipeline(
         if key in tiers:
             tiers[key]()
     step(1.0, "Done")
-    return matched, suspects, a[~a["_a_idx"].isin(used_a)], b[~b["_b_idx"].isin(used_b)]
+    ua = a[~a["_a_idx"].isin(used_a)].copy()
+    ub = b[~b["_b_idx"].isin(used_b)].copy()
+    # Provide coarse-grained reasons for no match (best-effort)
+    if not ua.empty:
+        # Check if any email counterpart exists on B
+        ua["no_match_rationale"] = ""
+        has_email_candidate = ua["clean_email"].isin(b["clean_email"]).fillna(False)
+        ua.loc[~has_email_candidate, "no_match_rationale"] = "No candidate with same email"
+        # For those with email candidates, check tolerances
+        mask = has_email_candidate & ua["no_match_rationale"].eq("")
+        if mask.any():
+            # join to closest by email to approximate reason
+            tmp = ua.loc[mask, ["_a_idx","clean_email","date","amount"]].merge(
+                b[["clean_email","date","amount"]], on="clean_email", how="left", suffixes=("_a","_b")
+            )
+            tmp["amount_diff_pct"] = (tmp["amount_a"] - tmp["amount_b"]).abs() / tmp["amount_a"].replace(0, pd.NA)
+            tmp["date_diff_days"] = (tmp["date_a"] - tmp["date_b"]).abs().dt.days
+            # reduce per a_idx to a single worst offender
+            reduc = tmp.groupby("_a_idx").agg({"amount_diff_pct":"min","date_diff_days":"min"}).reset_index()
+            reasons = []
+            for _, r in reduc.iterrows():
+                msgs = []
+                if pd.notna(r["date_diff_days"]) and r["date_diff_days"] > rules.date_tolerance:
+                    msgs.append(f"date off by {int(r['date_diff_days'])}d > {rules.date_tolerance}d")
+                if pd.notna(r["amount_diff_pct"]) and r["amount_diff_pct"] > rules.amount_tolerance:
+                    msgs.append(f"amount off by {r['amount_diff_pct']*100:.2f}% > {rules.amount_tolerance*100:.2f}%")
+                reasons.append((int(r["_a_idx"]), "; ".join(msgs) if msgs else "no within-tolerance candidate"))
+            rmap = {k:v for k,v in reasons}
+            ua.loc[ua["_a_idx"].isin(rmap.keys()), "no_match_rationale"] = ua.loc[ua["_a_idx"].isin(rmap.keys()), "_a_idx"].map(rmap)
+        ua.loc[ua["no_match_rationale"].eq("") | ua["no_match_rationale"].isna(), "no_match_rationale"] = "No match within tolerances"
+    if not ub.empty:
+        ub["no_match_rationale"] = "No match within tolerances"
+    return matched, suspects, ua, ub

@@ -131,16 +131,16 @@ if df_a is not None and df_b is not None:
 
     st.info("Proceed to configure matching rules in the sidebar.")
     st.sidebar.subheader("Matching Rule Configuration")
-    amount_tolerance = st.sidebar.number_input("Amount Tolerance (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.01)
-    date_tolerance = st.sidebar.number_input("Date Tolerance (days)", min_value=0, max_value=30, value=2, step=1)
-    name_sim = st.sidebar.slider("Name Similarity (fuzzy)", 0.0, 1.0, 0.85, 0.01)
-    domain_sim = st.sidebar.slider("Domain Similarity (fuzzy)", 0.0, 1.0, 0.9, 0.01)
+    amount_tolerance = st.sidebar.number_input("Amount Tolerance (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.01, key="amount_tolerance")
+    date_tolerance = st.sidebar.number_input("Date Tolerance (days)", min_value=0, max_value=30, value=2, step=1, key="date_tolerance")
+    name_sim = st.sidebar.slider("Name Similarity (fuzzy)", 0.0, 1.0, 0.85, 0.01, key="name_sim")
+    domain_sim = st.sidebar.slider("Domain Similarity (fuzzy)", 0.0, 1.0, 0.9, 0.01, key="domain_sim")
 
     st.sidebar.caption("Weights for tie-breaking (will be normalized)")
-    w_amount = st.sidebar.slider("Weight: Amount", 0.0, 1.0, 0.6, 0.01)
-    w_date = st.sidebar.slider("Weight: Date", 0.0, 1.0, 0.3, 0.01)
-    w_name = st.sidebar.slider("Weight: Name", 0.0, 1.0, 0.08, 0.01)
-    w_domain = st.sidebar.slider("Weight: Email Domain", 0.0, 1.0, 0.02, 0.01)
+    w_amount = st.sidebar.slider("Weight: Amount", 0.0, 1.0, 0.6, 0.01, key="w_amount")
+    w_date = st.sidebar.slider("Weight: Date", 0.0, 1.0, 0.3, 0.01, key="w_date")
+    w_name = st.sidebar.slider("Weight: Name", 0.0, 1.0, 0.08, 0.01, key="w_name")
+    w_domain = st.sidebar.slider("Weight: Email Domain", 0.0, 1.0, 0.02, 0.01, key="w_domain")
 
     rules_config = RulesConfig(
         amount_tolerance=amount_tolerance/100.0,
@@ -183,6 +183,44 @@ if df_a is not None and df_b is not None:
         data = json.load(up)
         st.session_state["presets"] = data
         st.success("Presets loaded into session.")
+    # Apply preset to widgets/session
+    if st.session_state.get("presets"):
+        names = list(st.session_state["presets"].keys())
+        sel = st.sidebar.selectbox("Apply Preset", options=["(select)"] + names, index=0, key="apply_preset_name")
+        if sel != "(select)" and st.sidebar.button("Apply", key="apply_preset_btn"):
+            p = st.session_state["presets"][sel]
+            # set mapping selectboxes
+            st.session_state["a_invoice_id"] = p["mapping_a"]["invoice_id"]
+            st.session_state["a_email"] = p["mapping_a"]["customer_email"]
+            st.session_state["a_date"] = p["mapping_a"]["invoice_date"]
+            st.session_state["a_amount"] = p["mapping_a"]["total_amount"]
+            st.session_state["a_po"] = p["mapping_a"].get("po_number")
+            st.session_state["b_ref"] = p["mapping_b"]["ref_code"]
+            st.session_state["b_email"] = p["mapping_b"]["email"]
+            st.session_state["b_date"] = p["mapping_b"]["doc_date"]
+            st.session_state["b_amount"] = p["mapping_b"]["grand_total"]
+            st.session_state["b_po"] = p["mapping_b"].get("purchase_order")
+            # rules
+            st.session_state["amount_tolerance"] = float(p["rules"]["amount_tolerance"] * 100.0)
+            st.session_state["date_tolerance"] = int(p["rules"]["date_tolerance"])
+            st.session_state["name_sim"] = float(p["rules"]["name_similarity"])
+            st.session_state["domain_sim"] = float(p["rules"].get("domain_similarity", 0.9))
+            st.session_state["w_amount"] = float(p["rules"].get("weight_amount", 0.6))
+            st.session_state["w_date"] = float(p["rules"].get("weight_date", 0.3))
+            st.session_state["w_name"] = float(p["rules"].get("weight_name", 0.08))
+            st.session_state["w_domain"] = float(p["rules"].get("weight_domain", 0.02))
+            # order
+            order = p.get("rule_order", ["exact_id","canonical_id","composite","fuzzy"])[:4]
+            while len(order) < 4:
+                for opt in ["exact_id","canonical_id","composite","fuzzy"]:
+                    if opt not in order:
+                        order.append(opt)
+                        break
+            for i, val in enumerate(order):
+                st.session_state[f"tier_{i}"] = val
+            # patterns
+            st.session_state["patterns"] = p.get("patterns", [])
+            st.rerun()
 
     # Run Linking
     dry_run = st.sidebar.checkbox("Sample-size dry run (first 500 rows)")
@@ -360,12 +398,14 @@ if df_a is not None and df_b is not None:
         if unmatched_a is not None or unmatched_b is not None:
             ua = pd.DataFrame(unmatched_a)
             ub = pd.DataFrame(unmatched_b)
-            # Placeholder rationale column
             if not ua.empty:
-                ua["no_match_rationale"] = "No exact/canonical/composite/fuzzy match within tolerances"
+                # don't overwrite if pipeline provided granular rationale
+                if "no_match_rationale" not in ua.columns:
+                    ua["no_match_rationale"] = "No match within tolerances"
                 st.download_button("Download Unmatched A CSV", data=ua.to_csv(index=False), file_name="unmatched_a.csv", mime="text/csv")
             if not ub.empty:
-                ub["no_match_rationale"] = "No exact/canonical/composite/fuzzy match within tolerances"
+                if "no_match_rationale" not in ub.columns:
+                    ub["no_match_rationale"] = "No match within tolerances"
                 st.download_button("Download Unmatched B CSV", data=ub.to_csv(index=False), file_name="unmatched_b.csv", mime="text/csv")
 else:
     st.warning("Please upload both Source A and Source B CSV files to continue.")
