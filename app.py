@@ -1,33 +1,17 @@
 import streamlit as st
 import pandas as pd
-import re
+import json
+from datetime import datetime
 
-# --- Data Cleaning & Normalization Functions ---
-def normalize_id(text):
-    """Extracts only digits from a string."""
-    if not isinstance(text, str):
-        return ""
-    return re.sub(r'\D', '', text)
+from src.utils import autodetect_a, autodetect_b, MappingA, MappingB, RulesConfig, AppPreset
+from src.pipeline import run_pipeline
 
-def clean_email(email):
-    """Removes whitespace from an email string."""
-    if not isinstance(email, str):
-        return ""
-    return email.replace(" ", "").lower()
-
-def is_amount_close(amount1, amount2, tolerance=0.001): # 0.1% tolerance
-    """Checks if two amounts are within a certain percentage tolerance."""
-    if amount1 == 0 and amount2 == 0:
-        return True
-    if pd.isna(amount1) or pd.isna(amount2) or amount1 == 0:
-        return False
-    return abs(amount1 - amount2) / amount1 <= tolerance
-
-def is_date_close(date1, date2, tolerance_days=2):
-    """Checks if two dates are within a certain day tolerance."""
-    if pd.isna(date1) or pd.isna(date2):
-        return False
-    return abs((date1 - date2).days) <= tolerance_days
+# Optional grid UI; degrade gracefully if not installed
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder
+    HAVE_AGGRID = True
+except Exception:
+    HAVE_AGGRID = False
 
 st.set_page_config(page_title="Cross-Source Record Linking", layout="wide")
 st.title("Cross-Source Record Linking App")
@@ -52,10 +36,17 @@ if source_b_file is not None:
 else:
     df_b = None
 
-# Column mapping UI (semantic fields)
+# Column mapping UI (semantic fields + autodetect)
 if df_a is not None and df_b is not None:
     st.subheader("Column Mapping")
     col_left, col_right = st.columns(2)
+
+    # Apply pending autodetected values BEFORE creating widgets
+    if st.session_state.get("apply_autodetect", False):
+        auto = st.session_state.get("autodetect_values", {})
+        for k, v in auto.items():
+            st.session_state[k] = v
+        st.session_state["apply_autodetect"] = False
 
     with col_left:
         st.markdown("Source A mappings")
@@ -73,22 +64,33 @@ if df_a is not None and df_b is not None:
         b_amount = st.selectbox("B: Grand Total", options=[None] + list(df_b.columns), key="b_amount")
         b_po = st.selectbox("B: Purchase Order (optional)", options=[None] + list(df_b.columns), key="b_po")
 
-    mapping = {
-        'a': {
-            'invoice_id': a_invoice_id,
-            'customer_email': a_email,
-            'invoice_date': a_date,
-            'total_amount': a_amount,
-            'po_number': a_po,
-        },
-        'b': {
-            'ref_code': b_ref,
-            'email': b_email,
-            'doc_date': b_date,
-            'grand_total': b_amount,
-            'purchase_order': b_po,
-        }
-    }
+    # Autodetect button (set values and rerun)
+    if st.button("Autodetect Mappings"):
+        det_a = autodetect_a(df_a)
+        det_b = autodetect_b(df_b)
+        values = {}
+        if det_a:
+            values.update({
+                "a_invoice_id": det_a.invoice_id,
+                "a_email": det_a.customer_email,
+                "a_date": det_a.invoice_date,
+                "a_amount": det_a.total_amount,
+                "a_po": getattr(det_a, 'po_number', None),
+            })
+        if det_b:
+            values.update({
+                "b_ref": det_b.ref_code,
+                "b_email": det_b.email,
+                "b_date": det_b.doc_date,
+                "b_amount": det_b.grand_total,
+                "b_po": getattr(det_b, 'purchase_order', None),
+            })
+        st.session_state["autodetect_values"] = values
+        st.session_state["apply_autodetect"] = True
+        st.rerun()
+
+    mapping_a = MappingA(invoice_id=a_invoice_id, customer_email=a_email, invoice_date=a_date, total_amount=a_amount, po_number=a_po) if all(v is not None for v in [a_invoice_id, a_email, a_date, a_amount]) else None
+    mapping_b = MappingB(ref_code=b_ref, email=b_email, doc_date=b_date, grand_total=b_amount, purchase_order=b_po) if all(v is not None for v in [b_ref, b_email, b_date, b_amount]) else None
 
     # Validate required mappings
     required_a = [a_invoice_id, a_email, a_date, a_amount]
@@ -104,134 +106,44 @@ if df_a is not None and df_b is not None:
     st.sidebar.subheader("Matching Rule Configuration")
     amount_tolerance = st.sidebar.number_input("Amount Tolerance (%)", min_value=0.0, max_value=5.0, value=0.1, step=0.01)
     date_tolerance = st.sidebar.number_input("Date Tolerance (days)", min_value=0, max_value=30, value=2, step=1)
-    rules_config = {
-        'amount_tolerance': amount_tolerance / 100,
-        'date_tolerance': date_tolerance
-    }
+    name_sim = st.sidebar.slider("Name Similarity (fuzzy)", 0.0, 1.0, 0.85, 0.01)
+    domain_sim = st.sidebar.slider("Domain Similarity (fuzzy)", 0.0, 1.0, 0.9, 0.01)
+    rules_config = RulesConfig(amount_tolerance=amount_tolerance/100.0, date_tolerance=int(date_tolerance), name_similarity=name_sim, domain_similarity=domain_sim)
 
-    # --- Main Matching Pipeline ---
-    def run_linking_pipeline(df_a, df_b, mapping, rules_config):
-        # Pre-processing: create normalized columns
-        df_a = df_a.copy().reset_index().rename(columns={'index': '_a_idx'})
-        df_b = df_b.copy().reset_index().rename(columns={'index': '_b_idx'})
+    # Presets save/load
+    st.sidebar.subheader("Presets")
+    preset_name = st.sidebar.text_input("Preset name", value=f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+    if st.sidebar.button("Save Preset") and mapping_a and mapping_b:
+        preset = AppPreset(mapping_a=mapping_a, mapping_b=mapping_b, rules=rules_config)
+        st.session_state.setdefault("presets", {})[preset_name] = json.loads(preset.model_dump_json())
+        st.success(f"Preset '{preset_name}' saved in session.")
+    # Download presets
+    if st.sidebar.button("Download Presets JSON"):
+        payload = json.dumps(st.session_state.get("presets", {}), indent=2)
+        st.download_button("Download Now", data=payload, file_name="presets.json", mime="application/json")
+    # Upload presets
+    up = st.sidebar.file_uploader("Load Presets JSON", type=["json"], key="presets_json")
+    if up is not None:
+        data = json.load(up)
+        st.session_state["presets"] = data
+        st.success("Presets loaded into session.")
 
-        a_id = mapping['a']['invoice_id']
-        a_email = mapping['a']['customer_email']
-        a_date = mapping['a']['invoice_date']
-        a_amt = mapping['a']['total_amount']
-        b_id = mapping['b']['ref_code']
-        b_email = mapping['b']['email']
-        b_date = mapping['b']['doc_date']
-        b_amt = mapping['b']['grand_total']
-
-        df_a['canonical_id'] = df_a[a_id].astype(str).apply(normalize_id)
-        df_a['clean_email'] = df_a[a_email].astype(str).apply(clean_email)
-        df_b['canonical_id'] = df_b[b_id].astype(str).apply(normalize_id)
-        df_b['clean_email'] = df_b[b_email].astype(str).apply(clean_email)
-        df_a['invoice_date_norm'] = pd.to_datetime(df_a[a_date], errors='coerce')
-        df_b['doc_date_norm'] = pd.to_datetime(df_b[b_date], errors='coerce')
-        df_a['total_amount_norm'] = pd.to_numeric(df_a[a_amt], errors='coerce')
-        df_b['grand_total_norm'] = pd.to_numeric(df_b[b_amt], errors='coerce')
-
-        matched_pairs = []
-        suspect_pairs = []
-        used_a = set()
-        used_b = set()
-
-        def add_match(row_a, row_b, tier, rationale):
-            matched_pairs.append({
-                'source_a': row_a.to_dict(),
-                'source_b': row_b.to_dict(),
-                'tier': tier,
-                'rationale': rationale
-            })
-            used_a.add(row_a['_a_idx'])
-            used_b.add(row_b['_b_idx'])
-
-        def add_suspect(row_a, row_b, tier, rationale):
-            suspect_pairs.append({
-                'source_a': row_a.to_dict(),
-                'source_b': row_b.to_dict(),
-                'tier': tier,
-                'rationale': rationale
-            })
-
-        # --- Tier 1: Exact ID Match ---
-        exact = df_a.merge(df_b, left_on=a_id, right_on=b_id, how='inner', suffixes=('_a', '_b'))
-        if not exact.empty:
-            # one-to-one resolution
-            exact = exact.sort_values([a_id, b_id]).drop_duplicates(subset=['_a_idx'], keep='first')
-            seen_b = set()
-            for _, r in exact.iterrows():
-                if r['_a_idx'] in used_a or r['_b_idx'] in used_b or r['_b_idx'] in seen_b:
-                    continue
-                add_match(r, r, 1, 'Exact match on primary identifier.')
-                seen_b.add(r['_b_idx'])
-
-        # --- Tier 2: Canonical ID Match ---
-        rem_a = df_a[~df_a['_a_idx'].isin(used_a)]
-        rem_b = df_b[~df_b['_b_idx'].isin(used_b)]
-        canon = rem_a.merge(rem_b, on='canonical_id', how='inner', suffixes=('_a', '_b'))
-        if not canon.empty:
-            canon = canon.sort_values(['canonical_id']).drop_duplicates(subset=['_a_idx'], keep='first')
-            for _, r in canon.iterrows():
-                if r['_a_idx'] in used_a or r['_b_idx'] in used_b:
-                    continue
-                add_match(r, r, 2, 'Match on normalized numeric identifier.')
-
-        # --- Tier 3: Composite Key Match with tie-breaker ---
-        rem_a = df_a[~df_a['_a_idx'].isin(used_a)]
-        rem_b = df_b[~df_b['_b_idx'].isin(used_b)]
-        amount_tol = rules_config.get('amount_tolerance', 0.001)
-        date_tol = rules_config.get('date_tolerance', 2)
-
-        if not rem_a.empty and not rem_b.empty:
-            cand = rem_a.merge(rem_b, left_on='clean_email', right_on='clean_email', how='inner', suffixes=('_a', '_b'))
-            if not cand.empty:
-                cand['amount_diff_pct'] = (cand['total_amount_norm'] - cand['grand_total_norm']).abs() / cand['total_amount_norm'].replace(0, pd.NA)
-                cand['date_diff_days'] = (cand['invoice_date_norm'] - cand['doc_date_norm']).abs().dt.days
-                eligible = cand[(cand['amount_diff_pct'] <= amount_tol) & (cand['date_diff_days'] <= date_tol)]
-
-                # Greedy assignment by score
-                if not eligible.empty:
-                    eligible['score'] = eligible['amount_diff_pct'].fillna(1e9) * 100 + eligible['date_diff_days'].fillna(1e9)
-                    eligible = eligible.sort_values(['score'])
-                    taken_b = set()
-                    taken_a = set()
-                    for _, r in eligible.iterrows():
-                        if r['_a_idx'] in used_a or r['_b_idx'] in used_b:
-                            continue
-                        if r['_a_idx'] in taken_a or r['_b_idx'] in taken_b:
-                            # competing candidate becomes suspect
-                            ra = rem_a.loc[rem_a['_a_idx'] == r['_a_idx']].iloc[0]
-                            rb = rem_b.loc[rem_b['_b_idx'] == r['_b_idx']].iloc[0]
-                            add_suspect(ra, rb, 3, 'Competing candidate (tie) in composite match.')
-                            continue
-                        ra = rem_a.loc[rem_a['_a_idx'] == r['_a_idx']].iloc[0]
-                        rb = rem_b.loc[rem_b['_b_idx'] == r['_b_idx']].iloc[0]
-                        add_match(ra, rb, 3, f"Match on email with date ≤ {date_tol} days and amount ≤ {amount_tol*100:.2f}%.")
-                        taken_a.add(r['_a_idx'])
-                        taken_b.add(r['_b_idx'])
-
-                # Near-miss suspects
-                near = cand[((cand['amount_diff_pct'] <= amount_tol) & (cand['date_diff_days'] > date_tol)) |
-                            ((cand['amount_diff_pct'] > amount_tol) & (cand['date_diff_days'] <= date_tol))]
-                if not near.empty:
-                    for _, r in near.iterrows():
-                        ra = rem_a.loc[rem_a['_a_idx'] == r['_a_idx']].iloc[0]
-                        rb = rem_b.loc[rem_b['_b_idx'] == r['_b_idx']].iloc[0]
-                        reason = 'Email matches; one of date/amount just outside tolerance.'
-                        add_suspect(ra, rb, 3, reason)
-
-        # Final unmatched
-        unmatched_a = df_a[~df_a['_a_idx'].isin(used_a)]
-        unmatched_b = df_b[~df_b['_b_idx'].isin(used_b)]
-
-        return matched_pairs, suspect_pairs, unmatched_a, unmatched_b
+    # (Old inline pipeline removed; using src.pipeline.run_pipeline)
 
     # --- Run Linking Button ---
-    if mapping_ready and st.button("Run Linking"):
-        matched_pairs, suspect_pairs, unmatched_a, unmatched_b = run_linking_pipeline(df_a, df_b, mapping, rules_config)
+    # Progress and dry-run
+    dry_run = st.sidebar.checkbox("Sample-size dry run (first 500 rows)")
+    sample_n = 500 if dry_run else None
+
+    if mapping_a and mapping_b and st.button("Run Linking"):
+        progress_bar = st.progress(0)
+        status = st.empty()
+
+        def cb(p: float, msg: str):
+            progress_bar.progress(min(100, int(p*100)))
+            status.write(msg)
+
+        matched_pairs, suspect_pairs, unmatched_a, unmatched_b = run_pipeline(df_a, df_b, mapping_a, mapping_b, rules_config, progress=cb, sample_n=sample_n)
 
         # Persist results in session_state
         st.session_state["matched_pairs"] = matched_pairs
@@ -253,7 +165,7 @@ if df_a is not None and df_b is not None:
         st.success(f"Linking complete! {len(matched_pairs)} matched, {len(suspect_pairs)} suspects.")
 
     # If results exist, display them
-    if mapping_ready and "matched_pairs" in st.session_state:
+    if "matched_pairs" in st.session_state:
         matched_pairs = st.session_state["matched_pairs"]
         suspect_pairs = st.session_state["suspect_pairs"]
         unmatched_a = st.session_state["unmatched_a"]
@@ -268,35 +180,55 @@ if df_a is not None and df_b is not None:
         col5.metric("Unmatched", len(unmatched_a) + len(unmatched_b))
 
         # --- Results Tabs ---
-        tab1, tab2, tab3 = st.tabs(["Matched", "Suspects", "Unmatched"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Matched", "Suspects", "Unmatched", "Needs Attention"])
 
         with tab1:
             st.subheader("Matched Records")
-            for i, match in enumerate(matched_pairs):
-                with st.expander(f"Match {i+1} - Tier {match['tier']}"):
-                    st.write("Source A Record:", match['source_a'])
-                    st.write("Source B Record:", match['source_b'])
-                    st.info(f"Rationale: {match['rationale']}")
+            for i, m in enumerate(matched_pairs):
+                with st.expander(f"Match {i+1} - Tier {getattr(m, 'tier', '')}"):
+                    st.write("Source A Record:", getattr(m, 'a_row', m))
+                    st.write("Source B Record:", getattr(m, 'b_row', m))
+                    st.info(f"Rationale: {getattr(m, 'rationale', '')}")
             if matched_pairs:
                 matched_df = pd.DataFrame([
-                    {**m['source_a'], **{f"B_{k}": v for k, v in m['source_b'].items()}, "rationale": m['rationale'], "tier": m['tier']} for m in matched_pairs
+                    {**m.a_row, **{f"B_{k}": v for k, v in m.b_row.items()}, "rationale": m.rationale, "tier": m.tier, "score": m.score} if hasattr(m, 'a_row') else m for m in matched_pairs
                 ])
                 csv = matched_df.to_csv(index=False)
                 st.download_button("Download Matched Results CSV", data=csv, file_name="matched_results.csv", mime="text/csv")
+                if HAVE_AGGRID:
+                    gob = GridOptionsBuilder.from_dataframe(matched_df)
+                    gob.configure_default_column(filter=True, sortable=True, resizable=True)
+                    AgGrid(matched_df, gridOptions=gob.build(), height=300)
 
         with tab2:
             st.subheader("Suspect Records")
-            for i, suspect in enumerate(suspect_pairs):
-                with st.expander(f"Suspect {i+1} - Tier {suspect['tier']}"):
-                    st.write("Source A Record:", suspect['source_a'])
-                    st.write("Source B Record:", suspect['source_b'])
-                    st.info(f"Rationale: {suspect['rationale']}")
-                    st.button(f"Confirm Match {i+1}", key=f"confirm_{i}")
+            needs_attention = st.session_state.setdefault("needs_attention", [])
+            for i, s in enumerate(suspect_pairs):
+                with st.expander(f"Suspect {i+1} - {getattr(s, 'tier', '')}"):
+                    st.write("Source A Record:", getattr(s, 'a_row', s))
+                    st.write("Source B Record:", getattr(s, 'b_row', s))
+                    st.info(f"Rationale: {getattr(s, 'rationale', '')}")
+                    cols = st.columns(3)
+                    if cols[0].button(f"Accept #{i+1}"):
+                        st.session_state.setdefault("accepted", []).append(s)
+                    if cols[1].button(f"Reject #{i+1}"):
+                        st.session_state.setdefault("rejected", []).append(s)
+                    if cols[2].button(f"Defer #{i+1}"):
+                        needs_attention.append(s)
 
         with tab3:
             st.subheader("Unmatched Records")
             st.write("Unmatched Source A Records:", unmatched_a)
             st.write("Unmatched Source B Records:", unmatched_b)
+
+        with tab4:
+            st.subheader("Needs Attention")
+            if st.session_state.get("needs_attention"):
+                df_na = pd.DataFrame([{**x.a_row, **{f"B_{k}": v for k, v in x.b_row.items()}, "tier": x.tier} for x in st.session_state["needs_attention"] if hasattr(x, 'a_row')])
+                if HAVE_AGGRID:
+                    AgGrid(df_na, height=250)
+                else:
+                    st.dataframe(df_na, height=250)
 
         # --- Print Logs ---
         with st.expander("Run Logs"):
