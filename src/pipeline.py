@@ -118,10 +118,17 @@ def run_pipeline(
         cand["name_sim"] = 0.0  # placeholder if name columns are unknown here
 
         elig = cand[(cand["amount_diff_pct"] <= rules.amount_tolerance) & (cand["date_diff_days"] <= rules.date_tolerance)]
+        # optional domain similarity gate
+        if getattr(rules, "domain_similarity_min", None) is not None:
+            try:
+                elig = elig[elig["domain_sim"] >= float(rules.domain_similarity_min)]
+            except Exception:
+                pass
         if not elig.empty:
             weights = rules.to_weights() if hasattr(rules, 'to_weights') else ScoreWeights()
             elig["score"] = elig.apply(lambda r: composite_score(float(r["amount_diff_pct"] or 0), float(r["date_diff_days"] or 0), float(r["name_sim"] or 0), float(r["domain_sim"] or 0), weights), axis=1)
-            elig = elig.sort_values("score", ascending=False)
+            # deterministic tiebreak: higher score, then smaller date diff, then smaller amount diff
+            elig = elig.sort_values(["score", "date_diff_days", "amount_diff_pct"], ascending=[False, True, True])
             seen_a: set[int] = set()
             seen_b: set[int] = set()
             for _, r in elig.iterrows():

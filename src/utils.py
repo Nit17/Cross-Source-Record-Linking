@@ -60,6 +60,7 @@ class RulesConfig(BaseModel):
     date_tolerance: int = Field(2, ge=0)
     name_similarity: float = Field(0.85, ge=0, le=1)
     domain_similarity: float = Field(0.9, ge=0, le=1)
+    domain_similarity_min: Optional[float] = Field(default=None, ge=0, le=1)
     # weights for scoring (will be normalized)
     weight_amount: float = Field(0.6, ge=0, le=1)
     weight_date: float = Field(0.3, ge=0, le=1)
@@ -173,11 +174,14 @@ class Pattern(BaseModel):
     sep: Optional[str] = None           # for extract_token
     index: Optional[int] = None         # token index
     apply_to: Literal["A", "B", "both"] = "B"
+    enabled: bool = True
 
 
 def apply_patterns(text: object, patterns: List[Pattern]) -> str:
     s = "" if text is None else str(text)
     for p in patterns or []:
+        if hasattr(p, 'enabled') and not p.enabled:
+            continue
         if p.apply_to not in ("both",):
             # Application side will be enforced by caller choosing patterns list for that side
             pass

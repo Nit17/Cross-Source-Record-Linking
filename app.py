@@ -183,6 +183,33 @@ if df_a is not None and df_b is not None:
         data = json.load(up)
         st.session_state["presets"] = data
         st.success("Presets loaded into session.")
+    with st.sidebar.expander("Pattern Manager", expanded=False):
+        pats = st.session_state.setdefault("patterns", [])
+        if pats:
+            for idx, p in enumerate(list(pats)):
+                cols = st.columns([4,2,2,2])
+                cols[0].write(f"{p.get('apply_to','B')} • {p.get('kind')} • {p.get('value','')} {('/'+str(p.get('replacement','')) if p.get('replacement') else '')}")
+                enabled_key = f"pat_enabled_{idx}"
+                cur_en = p.get("enabled", True)
+                new_en = cols[1].checkbox("Enabled", value=cur_en, key=enabled_key)
+                p["enabled"] = bool(new_en)
+                if cols[2].button("Test", key=f"pat_test_{idx}"):
+                    st.session_state["_pat_test_idx"] = idx
+                if cols[3].button("Remove", key=f"pat_rm_{idx}"):
+                    pats.pop(idx)
+                    st.experimental_rerun()
+            if "_pat_test_idx" in st.session_state:
+                ti = st.session_state.pop("_pat_test_idx")
+                st.write("Test pattern against sample:")
+                sample = st.text_input("Sample input", value="INV-123-XYZ", key="pat_test_sample")
+                from src.utils import Pattern as _Pattern, apply_patterns as _apply
+                try:
+                    pm = _Pattern(**pats[ti])
+                    st.write("Result:", _apply(sample, [pm]))
+                except Exception as e:
+                    st.error(str(e))
+        else:
+            st.caption("No patterns yet. Adopt from Suspects to add here.")
     # Apply preset to widgets/session
     if st.session_state.get("presets"):
         names = list(st.session_state["presets"].keys())
@@ -330,6 +357,10 @@ if df_a is not None and df_b is not None:
 
         with tab2:
             st.subheader("Suspect Records")
+            # quick view of current patterns (toggle)
+            with st.expander("Current Patterns", expanded=False):
+                for p in st.session_state.get("patterns", []):
+                    st.write(p)
             needs_attention = st.session_state.setdefault("needs_attention", [])
             for i, s in enumerate(suspect_pairs):
                 with st.expander(f"Suspect {i+1} - {getattr(s, 'tier', '')}"):
@@ -379,6 +410,17 @@ if df_a is not None and df_b is not None:
                 st.session_state["logs"] = []
             for log in st.session_state.get("logs", []):
                 st.write(log)
+
+        with st.expander("Tier Summary"):
+            # compute counts by tier
+            from collections import Counter
+            match_tiers = Counter([getattr(m, 'tier', 'unknown') for m in matched_pairs])
+            sus_tiers = Counter([getattr(s, 'tier', 'unknown') for s in suspect_pairs])
+            st.write("Matched by tier:", dict(match_tiers))
+            st.write("Suspects by tier:", dict(sus_tiers))
+            # simple suspect reasons tally
+            reasons = Counter([getattr(s, 'rationale', '') for s in suspect_pairs])
+            st.write("Suspect reasons:", dict(reasons))
 
         # Exports: final matches, suspects with reasons, unmatched with rationale placeholder
         st.markdown("---")
