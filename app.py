@@ -30,6 +30,22 @@ st.markdown(
         unsafe_allow_html=True,
 )
 
+theme_choice = st.sidebar.radio("Theme", ["Light", "Dark", "System"], index=0, help="Light is default. Use the top-right Settings > Theme to switch the full app theme.")
+
+# Optional dark overrides for custom elements (Streamlit global theme is controlled by Settings or config)
+if theme_choice == "Dark":
+        st.markdown(
+                """
+                <style>
+                    .app-subtitle { color:#cbd5e1; }
+                    .card { background:#0f172a; border-color:#334155; }
+                    .section-title { color:#e2e8f0; }
+                    .muted, .small-note { color:#94a3b8; }
+                </style>
+                """,
+                unsafe_allow_html=True,
+        )
+
 st.title("Cross-Source Record Linking")
 st.markdown("<div class='app-subtitle'>Match and reconcile invoices across two CSV sources with exact, composite, and fuzzy rules.</div>", unsafe_allow_html=True)
 st.divider()
