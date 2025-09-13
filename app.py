@@ -31,14 +31,34 @@ st.markdown(
 )
 
 theme_choice = st.sidebar.radio("Theme", ["Light", "Dark", "System"], index=0, help="Light is default. Use the top-right Settings > Theme to switch the full app theme.")
+aggrid_theme = "streamlit"
+if HAVE_AGGRID:
+    aggrid_theme = "dark" if theme_choice == "Dark" else "streamlit"
 
 # Optional dark overrides for custom elements (Streamlit global theme is controlled by Settings or config)
 if theme_choice == "Dark":
         st.markdown(
                 """
                 <style>
-          html, body, [data-testid="stAppViewContainer"] { background: #0b1324 !important; color: #e2e8f0 !important; }
-          [data-testid="stSidebar"] { background: #0a0f1e !important; }
+          html, body, [data-testid=\"stAppViewContainer\"] { background: #0b1324 !important; color: #e2e8f0 !important; }
+          [data-testid=\"stSidebar\"] { background: #0a0f1e !important; color:#e2e8f0 !important; }
+          a { color:#60a5fa !important; }
+          h1, h2, h3, h4, h5, h6 { color:#e5e7eb !important; }
+          /* Buttons */
+          .stButton > button, .stDownloadButton > button { background:#2563eb !important; color:#ffffff !important; border:1px solid #1d4ed8 !important; }
+          .stButton > button:hover, .stDownloadButton > button:hover { background:#1d4ed8 !important; border-color:#1e40af !important; }
+          /* Inputs */
+          input, textarea { background:#0f172a !important; color:#e2e8f0 !important; border-color:#334155 !important; }
+          [data-baseweb=\"select\"] { background:#0f172a !important; color:#e2e8f0 !important; }
+          /* Tabs */
+          [data-baseweb=\"tab-list\"] button[role=\"tab\"] { color:#cbd5e1 !important; }
+          [data-baseweb=\"tab-list\"] button[aria-selected=\"true\"] { color:#ffffff !important; border-bottom:2px solid #60a5fa !important; }
+          /* Expanders */
+          details { background:#0b1324 !important; border:1px solid #1f2937 !important; border-radius:8px !important; }
+          details[open] { background:#0f172a !important; }
+          /* Dataframes */
+          [data-testid=\"stDataFrame\"] { background:#0f172a !important; }
+          [data-testid=\"stDataFrame\"] table { color:#e2e8f0 !important; }
                     .app-subtitle { color:#cbd5e1; }
                     .card { background:#0f172a; border-color:#334155; }
                     .section-title { color:#e2e8f0; }
@@ -227,7 +247,7 @@ if df_a is not None and df_b is not None:
                 if HAVE_AGGRID:
                     gob = GridOptionsBuilder.from_dataframe(matched_df)
                     gob.configure_default_column(filter=True, sortable=True, resizable=True)
-                    AgGrid(matched_df, gridOptions=gob.build(), height=320, theme="streamlit")
+                    AgGrid(matched_df, gridOptions=gob.build(), height=320, theme=aggrid_theme)
 
         with tab2:
             st.subheader("Suspect Records")
@@ -260,7 +280,7 @@ if df_a is not None and df_b is not None:
             if st.session_state.get("needs_attention"):
                 df_na = pd.DataFrame([{**x.a_row, **{f"B_{k}": v for k, v in x.b_row.items()}, "tier": x.tier} for x in st.session_state["needs_attention"] if hasattr(x, 'a_row')])
                 if HAVE_AGGRID:
-                    AgGrid(df_na, height=260, theme="streamlit")
+                    AgGrid(df_na, height=260, theme=aggrid_theme)
                 else:
                     st.dataframe(df_na, height=260, use_container_width=True)
 
