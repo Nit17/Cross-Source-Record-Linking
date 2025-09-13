@@ -135,12 +135,45 @@ if df_a is not None and df_b is not None:
     date_tolerance = st.sidebar.number_input("Date Tolerance (days)", min_value=0, max_value=30, value=2, step=1)
     name_sim = st.sidebar.slider("Name Similarity (fuzzy)", 0.0, 1.0, 0.85, 0.01)
     domain_sim = st.sidebar.slider("Domain Similarity (fuzzy)", 0.0, 1.0, 0.9, 0.01)
-    rules_config = RulesConfig(amount_tolerance=amount_tolerance/100.0, date_tolerance=int(date_tolerance), name_similarity=name_sim, domain_similarity=domain_sim)
+
+    st.sidebar.caption("Weights for tie-breaking (will be normalized)")
+    w_amount = st.sidebar.slider("Weight: Amount", 0.0, 1.0, 0.6, 0.01)
+    w_date = st.sidebar.slider("Weight: Date", 0.0, 1.0, 0.3, 0.01)
+    w_name = st.sidebar.slider("Weight: Name", 0.0, 1.0, 0.08, 0.01)
+    w_domain = st.sidebar.slider("Weight: Email Domain", 0.0, 1.0, 0.02, 0.01)
+
+    rules_config = RulesConfig(
+        amount_tolerance=amount_tolerance/100.0,
+        date_tolerance=int(date_tolerance),
+        name_similarity=name_sim,
+        domain_similarity=domain_sim,
+        weight_amount=w_amount,
+        weight_date=w_date,
+        weight_name=w_name,
+        weight_domain=w_domain,
+    )
+
+    st.sidebar.subheader("Rule Tier Order")
+    default_order = ["exact_id", "canonical_id", "composite", "fuzzy"]
+    order_selects = []
+    used = set()
+    for i in range(4):
+        options = [o for o in default_order if o not in used]
+        val = st.sidebar.selectbox(f"Tier {i+1}", options=options, index=0, key=f"tier_{i}")
+        order_selects.append(val)
+        used.add(val)
+    st.session_state["rule_order"] = order_selects
 
     st.sidebar.subheader("Presets")
     preset_name = st.sidebar.text_input("Preset name", value=f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
     if st.sidebar.button("Save Preset") and mapping_a and mapping_b:
-        preset = AppPreset(mapping_a=mapping_a, mapping_b=mapping_b, rules=rules_config)
+        preset = AppPreset(
+            mapping_a=mapping_a,
+            mapping_b=mapping_b,
+            rules=rules_config,
+            rule_order=order_selects,
+            patterns=st.session_state.get("patterns"),
+        )
         st.session_state.setdefault("presets", {})[preset_name] = json.loads(preset.model_dump_json())
         st.success(f"Preset '{preset_name}' saved in session.")
     payload = json.dumps(st.session_state.get("presets", {}), indent=2)
@@ -162,8 +195,32 @@ if df_a is not None and df_b is not None:
         def cb(p: float, msg: str):
             progress_bar.progress(min(100, int(p*100)))
             status.write(msg)
+        # Run pipeline
+        # Prepare optional rule order and adopted patterns
+        rule_order = st.session_state.get("rule_order")
+        patterns_raw = st.session_state.get("patterns", [])
+        try:
+            from src.utils import Pattern as _Pattern
+            patt_models = []
+            for d in patterns_raw:
+                try:
+                    patt_models.append(_Pattern(**d))
+                except Exception:
+                    continue
+            patterns_a = [p for p in patt_models if p.apply_to in ("A", "both")]
+            patterns_b = [p for p in patt_models if p.apply_to in ("B", "both")]
+        except Exception:
+            rule_order = rule_order
+            patterns_a = None
+            patterns_b = None
 
-        matched_pairs, suspect_pairs, unmatched_a, unmatched_b = run_pipeline(df_a, df_b, mapping_a, mapping_b, rules_config, progress=cb, sample_n=sample_n)
+        # capture previous metrics for deltas
+        prev_metrics = st.session_state.get("last_metrics")
+
+        matched_pairs, suspect_pairs, unmatched_a, unmatched_b = run_pipeline(
+            df_a, df_b, mapping_a, mapping_b, rules_config, progress=cb, sample_n=sample_n,
+            rule_order=rule_order, patterns_a=patterns_a, patterns_b=patterns_b
+        )
 
         st.session_state["matched_pairs"] = matched_pairs
         st.session_state["suspect_pairs"] = suspect_pairs
@@ -180,6 +237,16 @@ if df_a is not None and df_b is not None:
             f"Unmatched Source B: {len(unmatched_b)}",
         ]
         st.session_state.setdefault("logs", []).extend(new_logs)
+        # Persist metrics and previous for delta display
+        cur = {
+            "a": len(df_a),
+            "b": len(df_b),
+            "matched": len(matched_pairs),
+            "suspects": len(suspect_pairs),
+            "unmatched": len(unmatched_a) + len(unmatched_b),
+        }
+        st.session_state["last_metrics_prev"] = prev_metrics
+        st.session_state["last_metrics"] = cur
         st.success(f"Linking complete! {len(matched_pairs)} matched, {len(suspect_pairs)} suspects.")
 
     if "matched_pairs" in st.session_state:
@@ -191,9 +258,17 @@ if df_a is not None and df_b is not None:
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Total Records in A", len(df_a))
         col2.metric("Total Records in B", len(df_b))
-        col3.metric("Matched", len(matched_pairs))
-        col4.metric("Suspect", len(suspect_pairs))
-        col5.metric("Unmatched", len(unmatched_a) + len(unmatched_b))
+        prev = st.session_state.get("last_metrics_prev")
+        delta_matched = None
+        delta_sus = None
+        delta_unm = None
+        if prev and all(k in prev for k in ("matched","suspects","unmatched")):
+            delta_matched = len(matched_pairs) - prev.get("matched", 0)
+            delta_sus = len(suspect_pairs) - prev.get("suspects", 0)
+            delta_unm = (len(unmatched_a)+len(unmatched_b)) - prev.get("unmatched", 0)
+        col3.metric("Matched", len(matched_pairs), delta=None if delta_matched is None else delta_matched)
+        col4.metric("Suspect", len(suspect_pairs), delta=None if delta_sus is None else delta_sus)
+        col5.metric("Unmatched", len(unmatched_a) + len(unmatched_b), delta=None if delta_unm is None else delta_unm)
 
         tab1, tab2, tab3, tab4 = st.tabs(["Matched", "Suspects", "Unmatched", "Needs Attention"])
 
@@ -230,6 +305,16 @@ if df_a is not None and df_b is not None:
                         st.session_state.setdefault("rejected", []).append(s)
                     if cols[2].button(f"Defer #{i+1}"):
                         needs_attention.append(s)
+                    # Adopt Pattern helper
+                    st.markdown("---")
+                    st.caption("Adopt pattern: derive transform to align IDs next run")
+                    from src.utils import suggest_pattern
+                    patt = suggest_pattern(getattr(s, 'a_row', {}).get(st.session_state.get('a_invoice_id')), getattr(s, 'b_row', {}).get(st.session_state.get('b_ref')))
+                    if patt:
+                        st.json(patt.model_dump())
+                        if st.button(f"Adopt this pattern for suspect #{i+1}"):
+                            st.session_state.setdefault("patterns", []).append(patt.model_dump())
+                            st.success("Pattern adopted for next run.")
 
         with tab3:
             st.subheader("Unmatched Records")
@@ -256,5 +341,31 @@ if df_a is not None and df_b is not None:
                 st.session_state["logs"] = []
             for log in st.session_state.get("logs", []):
                 st.write(log)
+
+        # Exports: final matches, suspects with reasons, unmatched with rationale placeholder
+        st.markdown("---")
+        st.subheader("Export")
+        # Final matches include accepted suspects
+        final_matches = list(matched_pairs) + st.session_state.get("accepted", [])
+        if final_matches:
+            final_df = pd.DataFrame([
+                {**m.a_row, **{f"B_{k}": v for k, v in m.b_row.items()}, "rationale": m.rationale, "tier": m.tier, "score": m.score} for m in final_matches if hasattr(m, 'a_row')
+            ])
+            st.download_button("Download Final Matches CSV", data=final_df.to_csv(index=False), file_name="final_matches.csv", mime="text/csv")
+        if suspect_pairs:
+            sus_df = pd.DataFrame([
+                {**s.a_row, **{f"B_{k}": v for k, v in s.b_row.items()}, "rationale": s.rationale, "tier": s.tier, "score": s.score} for s in suspect_pairs if hasattr(s, 'a_row')
+            ])
+            st.download_button("Download Suspects CSV", data=sus_df.to_csv(index=False), file_name="suspects.csv", mime="text/csv")
+        if unmatched_a is not None or unmatched_b is not None:
+            ua = pd.DataFrame(unmatched_a)
+            ub = pd.DataFrame(unmatched_b)
+            # Placeholder rationale column
+            if not ua.empty:
+                ua["no_match_rationale"] = "No exact/canonical/composite/fuzzy match within tolerances"
+                st.download_button("Download Unmatched A CSV", data=ua.to_csv(index=False), file_name="unmatched_a.csv", mime="text/csv")
+            if not ub.empty:
+                ub["no_match_rationale"] = "No exact/canonical/composite/fuzzy match within tolerances"
+                st.download_button("Download Unmatched B CSV", data=ub.to_csv(index=False), file_name="unmatched_b.csv", mime="text/csv")
 else:
     st.warning("Please upload both Source A and Source B CSV files to continue.")

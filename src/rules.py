@@ -13,7 +13,8 @@ from .utils import extract_domain
 class ScoreWeights:
     amount: float = 0.6
     date: float = 0.3
-    name: float = 0.1
+    name: float = 0.08
+    domain: float = 0.02
 
 
 def email_domain_similarity(a_email: str, b_email: str) -> float:
@@ -30,9 +31,10 @@ def name_similarity(a_name: str, b_name: str) -> float:
     return fuzz.token_set_ratio(str(a_name), str(b_name)) / 100.0
 
 
-def composite_score(amount_diff_pct: float, date_diff_days: float, name_sim: float, weights: ScoreWeights) -> float:
+def composite_score(amount_diff_pct: float, date_diff_days: float, name_sim: float, domain_sim: float, weights: ScoreWeights) -> float:
     return (
         (1 - min(1.0, amount_diff_pct)) * weights.amount
         + (1 - min(1.0, date_diff_days / 30.0)) * weights.date
-        + name_sim * weights.name
+    + name_sim * weights.name
+    + domain_sim * weights.domain
     )

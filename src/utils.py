@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
@@ -60,6 +60,21 @@ class RulesConfig(BaseModel):
     date_tolerance: int = Field(2, ge=0)
     name_similarity: float = Field(0.85, ge=0, le=1)
     domain_similarity: float = Field(0.9, ge=0, le=1)
+    # weights for scoring (will be normalized)
+    weight_amount: float = Field(0.6, ge=0, le=1)
+    weight_date: float = Field(0.3, ge=0, le=1)
+    weight_name: float = Field(0.1, ge=0, le=1)
+    weight_domain: float = Field(0.0, ge=0, le=1)
+
+    def to_weights(self):
+        from .rules import ScoreWeights
+        total = max(1e-9, self.weight_amount + self.weight_date + self.weight_name + self.weight_domain)
+        return ScoreWeights(
+            amount=self.weight_amount / total,
+            date=self.weight_date / total,
+            name=self.weight_name / total,
+            domain=self.weight_domain / total,
+        )
 
 
 class AppPreset(BaseModel):
@@ -72,6 +87,7 @@ class AppPreset(BaseModel):
         "composite",
         "fuzzy",
     ])
+    patterns: Optional[List[Dict]] = None  # persisted raw pattern dicts
 
 
 # --- Schema autodetect ---
@@ -146,3 +162,67 @@ def diff_fields(a: str, b: str) -> List[Tuple[int, int]]:
     if i < len(a) - j:
         spans.append((i, len(a) - j))
     return spans
+
+
+# --- Pattern adoption ---
+
+class Pattern(BaseModel):
+    kind: Literal["strip_prefix", "strip_suffix", "regex_replace", "extract_digits", "extract_token"]
+    value: Optional[str] = None         # for prefix/suffix or regex pattern
+    replacement: Optional[str] = None   # for regex replacement
+    sep: Optional[str] = None           # for extract_token
+    index: Optional[int] = None         # token index
+    apply_to: Literal["A", "B", "both"] = "B"
+
+
+def apply_patterns(text: object, patterns: List[Pattern]) -> str:
+    s = "" if text is None else str(text)
+    for p in patterns or []:
+        if p.apply_to not in ("both",):
+            # Application side will be enforced by caller choosing patterns list for that side
+            pass
+        if p.kind == "strip_prefix" and p.value and s.startswith(p.value):
+            s = s[len(p.value):]
+        elif p.kind == "strip_suffix" and p.value and s.endswith(p.value):
+            s = s[: -len(p.value)]
+        elif p.kind == "regex_replace" and p.value is not None:
+            try:
+                s = re.sub(p.value, p.replacement or "", s)
+            except re.error:
+                continue
+        elif p.kind == "extract_digits":
+            s = re.sub(r"\D", "", s)
+        elif p.kind == "extract_token" and p.sep is not None and p.index is not None:
+            parts = s.split(p.sep)
+            if 0 <= p.index < len(parts):
+                s = parts[p.index]
+    return s
+
+
+def suggest_pattern(a_id: object, b_ref: object) -> Optional[Pattern]:
+    """Heuristic: suggest a simple transformation to turn B ref into A id."""
+    a_str = "" if a_id is None else str(a_id)
+    b_str = "" if b_ref is None else str(b_ref)
+    if not a_str or not b_str:
+        return None
+    # exact digits match -> extract_digits
+    if re.sub(r"\D", "", b_str) == re.sub(r"\D", "", a_str) and re.sub(r"\D", "", b_str) != b_str:
+        return Pattern(kind="extract_digits", apply_to="B")
+    # suffix removal
+    if b_str.endswith(a_str):
+        prefix = b_str[:-len(a_str)]
+        if prefix:
+            return Pattern(kind="strip_prefix", value=prefix, apply_to="B")
+    # prefix removal
+    if b_str.startswith(a_str):
+        suffix = b_str[len(a_str):]
+        if suffix:
+            return Pattern(kind="strip_suffix", value=suffix, apply_to="B")
+    # substring token by delimiter
+    for sep in ["-", "_", "/", " "]:
+        parts = b_str.split(sep)
+        for idx, tok in enumerate(parts):
+            if tok == a_str:
+                return Pattern(kind="extract_token", sep=sep, index=idx, apply_to="B")
+    # regex fallback: capture digits
+    return Pattern(kind="regex_replace", value=r".*?(\d+).*", replacement=r"\1", apply_to="B")
