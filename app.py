@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import time
 from datetime import datetime
 
 from src.utils import autodetect_a, autodetect_b, MappingA, MappingB, RulesConfig, AppPreset
@@ -282,10 +283,12 @@ if df_a is not None and df_b is not None:
         # capture previous metrics for deltas
         prev_metrics = st.session_state.get("last_metrics")
 
+        t0 = time.time()
         matched_pairs, suspect_pairs, unmatched_a, unmatched_b = run_pipeline(
             df_a, df_b, mapping_a, mapping_b, rules_config, progress=cb, sample_n=sample_n,
             rule_order=rule_order, patterns_a=patterns_a, patterns_b=patterns_b
         )
+        duration_s = max(0.0, time.time() - t0)
 
         st.session_state["matched_pairs"] = matched_pairs
         st.session_state["suspect_pairs"] = suspect_pairs
@@ -312,6 +315,23 @@ if df_a is not None and df_b is not None:
         }
         st.session_state["last_metrics_prev"] = prev_metrics
         st.session_state["last_metrics"] = cur
+        # record run for analytics
+        st.session_state.setdefault("run_history", []).append({
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "matched": len(matched_pairs),
+            "suspects": len(suspect_pairs),
+            "unmatched": len(unmatched_a) + len(unmatched_b),
+            "duration_s": round(duration_s, 3),
+            "sample_n": sample_n or 0,
+            "rule_order": rule_order,
+            "amount_tol_pct": amount_tolerance,
+            "date_tol_days": date_tolerance,
+            "w_amount": w_amount,
+            "w_date": w_date,
+            "w_name": w_name,
+            "w_domain": w_domain,
+            "patterns_count": len(patterns_raw),
+        })
         st.success(f"Linking complete! {len(matched_pairs)} matched, {len(suspect_pairs)} suspects.")
 
     if "matched_pairs" in st.session_state:
@@ -335,7 +355,8 @@ if df_a is not None and df_b is not None:
         col4.metric("Suspect", len(suspect_pairs), delta=None if delta_sus is None else delta_sus)
         col5.metric("Unmatched", len(unmatched_a) + len(unmatched_b), delta=None if delta_unm is None else delta_unm)
 
-        tab1, tab2, tab3, tab4 = st.tabs(["Matched", "Suspects", "Unmatched", "Needs Attention"])
+        # Results tabs
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Matched", "Suspects", "Unmatched", "Needs Attention", "Analytics"])
 
         with tab1:
             st.subheader("Matched Records")
@@ -449,5 +470,83 @@ if df_a is not None and df_b is not None:
                 if "no_match_rationale" not in ub.columns:
                     ub["no_match_rationale"] = "No match within tolerances"
                 st.download_button("Download Unmatched B CSV", data=ub.to_csv(index=False), file_name="unmatched_b.csv", mime="text/csv")
+
+        with tab5:
+            st.subheader("Analytics Dashboard")
+            runs = st.session_state.get("run_history", [])
+            if runs:
+                hist_df = pd.DataFrame(runs)
+                st.caption("Runs over time")
+                st.line_chart(hist_df.set_index("timestamp")[["matched","suspects","unmatched"]])
+                st.caption("Run durations (s)")
+                st.bar_chart(hist_df.set_index("timestamp")["duration_s"])
+                st.download_button("Download Run History CSV", data=hist_df.to_csv(index=False), file_name="run_history.csv", mime="text/csv")
+            else:
+                st.info("No run history yet. Run the pipeline to populate analytics.")
+
+            # Current-run insights
+            from collections import Counter
+            st.markdown("### Current run insights")
+            mt = Counter([getattr(m, 'tier', 'unknown') for m in matched_pairs])
+            st.write("Matches by tier:", dict(mt))
+
+            # Composite diffs distribution (current run)
+            comp = [m for m in matched_pairs if getattr(m, 'tier', '') == 'composite']
+            if comp:
+                def _safe_get(d, k):
+                    return (d or {}).get(k)
+                diffs = []
+                for m in comp:
+                    arow = getattr(m,'a_row',{})
+                    brow = getattr(m,'b_row',{})
+                    try:
+                        # prefer normalized fields
+                        da = pd.to_datetime(_safe_get(arow,'date'))
+                        db = pd.to_datetime(_safe_get(brow,'date'))
+                        dd = abs((da - db).days) if not pd.isna(da) and not pd.isna(db) else None
+                        aa = pd.to_numeric(_safe_get(arow,'amount'))
+                        ab = pd.to_numeric(_safe_get(brow,'amount'))
+                        ap = float(abs((aa - ab)) / aa) if pd.notna(aa) and aa != 0 and pd.notna(ab) else None
+                    except Exception:
+                        dd = None
+                        ap = None
+                    diffs.append({"date_diff_days": dd, "amount_diff_pct": ap})
+                diffs_df = pd.DataFrame(diffs).dropna()
+                if not diffs_df.empty:
+                    st.caption("Composite matches: date/amount differences")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.bar_chart(diffs_df["date_diff_days"].value_counts().sort_index())
+                    with c2:
+                        # bin percentages into 1% buckets
+                        binned = (diffs_df["amount_diff_pct"]*100).round().clip(lower=0, upper=100).value_counts().sort_index()
+                        st.bar_chart(binned)
+
+            # Top email domains in matched vs suspects
+            def _domain_from_row(rowdict):
+                e = (rowdict or {}).get('clean_email') or (rowdict or {}).get('email')
+                try:
+                    return e.split('@',1)[1] if isinstance(e,str) and '@' in e else None
+                except Exception:
+                    return None
+            md = [_domain_from_row(getattr(m,'a_row',{})) for m in matched_pairs]
+            sd = [_domain_from_row(getattr(s,'a_row',{})) for s in suspect_pairs]
+            md_ser = pd.Series([x for x in md if x]).value_counts().head(10)
+            sd_ser = pd.Series([x for x in sd if x]).value_counts().head(10)
+            c3, c4 = st.columns(2)
+            with c3:
+                st.caption("Top domains (matched)")
+                if not md_ser.empty:
+                    st.bar_chart(md_ser)
+                else:
+                    st.write("—")
+            with c4:
+                st.caption("Top domains (suspects)")
+                if not sd_ser.empty:
+                    st.bar_chart(sd_ser)
+                else:
+                    st.write("—")
+
+    # moved tabs/analytics/export inside matched_pairs block to avoid undefined vars and fix indentation
 else:
     st.warning("Please upload both Source A and Source B CSV files to continue.")
