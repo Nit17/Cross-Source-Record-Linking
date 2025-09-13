@@ -25,6 +25,23 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Once running, open:
+
+- Local link: http://localhost:8501
+- Cloud link (if deployed): https://cross-source-record-linking.streamlit.app
+
+Tip: On macOS you can also open the local app directly from Terminal:
+
+```bash
+open http://localhost:8501
+```
+
+If you’re deploying on Streamlit Community Cloud, set the app entry point to `app.py`. After the first deploy, the public URL will be shown and will look like:
+
+```
+https://<your-username>-<repo-name>-<branch>.streamlit.app
+```
+
 ## Notes
 - Ensure you map the required fields for both sources before running.
 - Amount tolerance is a percentage (e.g., 0.1% default).
