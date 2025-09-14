@@ -31,6 +31,8 @@ Once running, open:
 
 - Local link: http://localhost:8501
 - Cloud link (if deployed): https://cross-source-record-linking.streamlit.app
+Direct link - https://cross-source-record-linking-kdgedfpbav8h63szgsstea.streamlit.app/
+Project demo -https://drive.google.com/file/d/1M2lM7vBrmJXeRnxvy96QHbAYsZofwuNW/view?usp=drive_link
 
 Tip: On macOS you can also open the local app directly from Terminal:
 
