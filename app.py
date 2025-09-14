@@ -78,6 +78,8 @@ if df_a is not None and df_b is not None:
         a_date = st.selectbox("A: Invoice Date", options=[None] + list(df_a.columns), key="a_date", help="Invoice issue date")
         a_amount = st.selectbox("A: Total Amount", options=[None] + list(df_a.columns), key="a_amount", help="Invoice total amount")
         a_po = st.selectbox("A: PO Number (optional)", options=[None] + list(df_a.columns), key="a_po", help="Purchase order number if available")
+    a_tax = st.selectbox("A: Tax Amount (optional)", options=[None] + list(df_a.columns), key="a_tax", help="Tax/VAT/GST amount if available")
+    a_ccy = st.selectbox("A: Currency (optional)", options=[None] + list(df_a.columns), key="a_ccy", help="Currency code like USD, EUR")
 
     with col_right:
         st.markdown("<div class='section-title'>Source B mappings</div>", unsafe_allow_html=True)
@@ -86,6 +88,8 @@ if df_a is not None and df_b is not None:
         b_date = st.selectbox("B: Document Date", options=[None] + list(df_b.columns), key="b_date", help="Document date (equiv. to invoice date)")
         b_amount = st.selectbox("B: Grand Total", options=[None] + list(df_b.columns), key="b_amount", help="Document total amount")
         b_po = st.selectbox("B: Purchase Order (optional)", options=[None] + list(df_b.columns), key="b_po", help="Purchase order number if available")
+    b_tax = st.selectbox("B: Tax Amount (optional)", options=[None] + list(df_b.columns), key="b_tax", help="Tax/VAT/GST amount if available")
+    b_ccy = st.selectbox("B: Currency (optional)", options=[None] + list(df_b.columns), key="b_ccy", help="Currency code like USD, EUR")
 
     cols_tools = st.columns([1,1,6])
     if cols_tools[0].button("Autodetect Mappings"):
@@ -99,6 +103,8 @@ if df_a is not None and df_b is not None:
                 "a_date": det_a.invoice_date,
                 "a_amount": det_a.total_amount,
                 "a_po": getattr(det_a, 'po_number', None),
+                "a_tax": getattr(det_a, 'tax_amount', None),
+                "a_ccy": getattr(det_a, 'currency', None),
             })
         if det_b:
             values.update({
@@ -107,6 +113,8 @@ if df_a is not None and df_b is not None:
                 "b_date": det_b.doc_date,
                 "b_amount": det_b.grand_total,
                 "b_po": getattr(det_b, 'purchase_order', None),
+                "b_tax": getattr(det_b, 'tax_amount', None),
+                "b_ccy": getattr(det_b, 'currency', None),
             })
         st.session_state["autodetect_values"] = values
         st.session_state["apply_autodetect"] = True
@@ -114,16 +122,16 @@ if df_a is not None and df_b is not None:
 
     if cols_tools[1].button("Reset Mapping"):
         for k in [
-            "a_invoice_id","a_email","a_date","a_amount","a_po",
-            "b_ref","b_email","b_date","b_amount","b_po"
+            "a_invoice_id","a_email","a_date","a_amount","a_po","a_tax","a_ccy",
+            "b_ref","b_email","b_date","b_amount","b_po","b_tax","b_ccy"
         ]:
             if k in st.session_state:
                 del st.session_state[k]
         st.experimental_set_query_params()  # clears widget state in URL
         st.rerun()
 
-    mapping_a = MappingA(invoice_id=a_invoice_id, customer_email=a_email, invoice_date=a_date, total_amount=a_amount, po_number=a_po) if all(v is not None for v in [a_invoice_id, a_email, a_date, a_amount]) else None
-    mapping_b = MappingB(ref_code=b_ref, email=b_email, doc_date=b_date, grand_total=b_amount, purchase_order=b_po) if all(v is not None for v in [b_ref, b_email, b_date, b_amount]) else None
+    mapping_a = MappingA(invoice_id=a_invoice_id, customer_email=a_email, invoice_date=a_date, total_amount=a_amount, po_number=a_po, tax_amount=a_tax, currency=a_ccy) if all(v is not None for v in [a_invoice_id, a_email, a_date, a_amount]) else None
+    mapping_b = MappingB(ref_code=b_ref, email=b_email, doc_date=b_date, grand_total=b_amount, purchase_order=b_po, tax_amount=b_tax, currency=b_ccy) if all(v is not None for v in [b_ref, b_email, b_date, b_amount]) else None
 
     required_a = [a_invoice_id, a_email, a_date, a_amount]
     required_b = [b_ref, b_email, b_date, b_amount]
@@ -223,11 +231,15 @@ if df_a is not None and df_b is not None:
             st.session_state["a_date"] = p["mapping_a"]["invoice_date"]
             st.session_state["a_amount"] = p["mapping_a"]["total_amount"]
             st.session_state["a_po"] = p["mapping_a"].get("po_number")
+            st.session_state["a_tax"] = p["mapping_a"].get("tax_amount")
+            st.session_state["a_ccy"] = p["mapping_a"].get("currency")
             st.session_state["b_ref"] = p["mapping_b"]["ref_code"]
             st.session_state["b_email"] = p["mapping_b"]["email"]
             st.session_state["b_date"] = p["mapping_b"]["doc_date"]
             st.session_state["b_amount"] = p["mapping_b"]["grand_total"]
             st.session_state["b_po"] = p["mapping_b"].get("purchase_order")
+            st.session_state["b_tax"] = p["mapping_b"].get("tax_amount")
+            st.session_state["b_ccy"] = p["mapping_b"].get("currency")
             # rules
             st.session_state["amount_tolerance"] = float(p["rules"]["amount_tolerance"] * 100.0)
             st.session_state["date_tolerance"] = int(p["rules"]["date_tolerance"])

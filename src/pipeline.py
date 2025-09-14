@@ -65,6 +65,27 @@ def run_pipeline(
     b["date"] = to_datetime(b[map_b.doc_date])
     a["amount"] = to_numeric(a[map_a.total_amount])
     b["amount"] = to_numeric(b[map_b.grand_total])
+    # Optional tax & currency
+    try:
+        if getattr(map_a, "tax_amount", None):
+            a["tax"] = to_numeric(a[getattr(map_a, "tax_amount")])
+    except Exception:
+        pass
+    try:
+        if getattr(map_b, "tax_amount", None):
+            b["tax"] = to_numeric(b[getattr(map_b, "tax_amount")])
+    except Exception:
+        pass
+    try:
+        if getattr(map_a, "currency", None):
+            a["currency"] = a[getattr(map_a, "currency")].astype(str).str.strip().str.upper()
+    except Exception:
+        pass
+    try:
+        if getattr(map_b, "currency", None):
+            b["currency"] = b[getattr(map_b, "currency")].astype(str).str.strip().str.upper()
+    except Exception:
+        pass
 
     matched: List[MatchResult] = []
     suspects: List[MatchResult] = []
@@ -118,6 +139,12 @@ def run_pipeline(
         cand["name_sim"] = 0.0  # placeholder if name columns are unknown here
 
         elig = cand[(cand["amount_diff_pct"] <= rules.amount_tolerance) & (cand["date_diff_days"] <= rules.date_tolerance)]
+        # Prefer/require same currency when currency is present on both sides
+        if "currency_a" in cand.columns and "currency_b" in cand.columns:
+            try:
+                elig = elig[(elig["currency_a"].notna()) & (elig["currency_b"].notna()) & (elig["currency_a"] == elig["currency_b"])]
+            except Exception:
+                pass
         # optional domain similarity gate
         if getattr(rules, "domain_similarity_min", None) is not None:
             try:

@@ -45,6 +45,8 @@ class MappingA(BaseModel):
     invoice_date: str
     total_amount: str
     po_number: Optional[str] = None
+    tax_amount: Optional[str] = None
+    currency: Optional[str] = None
 
 
 class MappingB(BaseModel):
@@ -53,6 +55,8 @@ class MappingB(BaseModel):
     doc_date: str
     grand_total: str
     purchase_order: Optional[str] = None
+    tax_amount: Optional[str] = None
+    currency: Optional[str] = None
 
 
 class RulesConfig(BaseModel):
@@ -99,6 +103,8 @@ CANDIDATES_A = {
     "invoice_date": ["invoice_date", "date", "doc_date", "invoice_dt"],
     "total_amount": ["total_amount", "amount", "grand_total", "total", "amt"],
     "po_number": ["po_number", "po", "purchase_order", "po_no"],
+    "tax_amount": ["tax_amount", "tax", "vat", "gst", "sales_tax", "taxamt", "tax_amt"],
+    "currency": ["currency", "curr", "ccy", "iso_currency", "currency_code", "currencycode"],
 }
 
 CANDIDATES_B = {
@@ -107,6 +113,8 @@ CANDIDATES_B = {
     "doc_date": ["doc_date", "date", "invoice_date"],
     "grand_total": ["grand_total", "amount", "total", "amt"],
     "purchase_order": ["purchase_order", "po", "po_number", "po_no"],
+    "tax_amount": ["tax_amount", "tax", "vat", "gst", "sales_tax", "taxamt", "tax_amt"],
+    "currency": ["currency", "curr", "ccy", "iso_currency", "currency_code", "currencycode"],
 }
 
 

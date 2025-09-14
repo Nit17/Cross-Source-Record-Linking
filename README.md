@@ -5,6 +5,8 @@ A Streamlit app for linking invoice records across two CSV sources using a tiere
 ## Features
 - File upload for Source A and Source B
 - Semantic column mapping UI
+	- Required: invoice ID, email, date, total amount
+	- Optional: PO number, tax amount, currency
 - Configurable tolerances (amount %, date days)
 - Tiered matching with suspects and rationale
 - Metrics dashboard and CSV export
